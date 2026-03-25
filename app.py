@@ -3,7 +3,6 @@ import cv2, numpy as np, io, img2pdf, os, json, time, subprocess, base64
 from PIL import Image
 from pdf2docx import Converter
 from werkzeug.utils import secure_filename
-from celery import Celery
 import google.generativeai as genai
 
 try:
@@ -18,18 +17,11 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMP_DIR = os.path.join(BASE_DIR, 'temp_storage')
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-# Celery & Redis Configuration (Reads from Docker environment variables)
-app.config['CELERY_BROKER_URL'] = os.environ.get('CELERY_BROKER_URL', 'redis://redis:6379/0')
-app.config['CELERY_RESULT_BACKEND'] = os.environ.get('CELERY_RESULT_BACKEND', 'redis://redis:6379/0')
-
-celery = Celery(app.name, broker=app.config['CELERY_BROKER_URL'])
-celery.conf.update(app.config)
-
 # --- AI INITIALIZATION ---
 print("✨ Connecting to Gemini Context Engine...")
 # IMPORTANT: Put your actual Gemini API Key in environment variable GEMINI_API_KEY.
 # On Render set this in Web Service Environment variables.
-genai.configure(api_key=os.environ.get('AIzaSyAePClWhbzoT6LHK96S8sdqLYNRPTVGFeU', ''))
+genai.configure(api_key=os.environ.get('GEMINI_API_KEY', ''))
 llm_model = genai.GenerativeModel('gemini-2.5-flash')
 print("✅ All Systems Ready!")
 
@@ -43,47 +35,6 @@ def cleanup_temp_dir(max_age_seconds=3600):
             if os.stat(file_path).st_mtime < now - max_age_seconds:
                 try: os.remove(file_path)
                 except Exception: pass
-
-# --- CELERY BACKGROUND TASKS ---
-@celery.task(bind=True)
-def async_ocr_task(self, image_path, apply_ai_formatting=False):
-    try:
-        # 1. Read image bytes from temp file
-        with open(image_path, 'rb') as f:
-            image_bytes = f.read()
-
-        mime_type = 'image/png'
-        # if the image is not png, still pass as binary
-
-        # 2. Use Gemini to extract text from the image
-        # NOTE: adjust according to the google-generativeai SDK version if needed.
-        response = llm_model.generate_content(
-            "Extract all text from this image exactly, preserving formatting. Return plain text only, no extra commentary.",
-            images=[{
-                'mimeType': mime_type,
-                'content': base64.b64encode(image_bytes).decode('utf-8')
-            }]
-        )
-
-        raw_text = (response.text or "").strip()
-
-        if os.path.exists(image_path):
-            os.remove(image_path)
-
-        if not raw_text:
-            return {"text": "No clear text or handwriting could be detected."}
-
-        if apply_ai_formatting:
-            prompt = f"Format this extracted text clearly and fix obvious typos. Return only text.\n\n{raw_text}"
-            formatted = llm_model.generate_content(prompt)
-            return {"text": (formatted.text or "").strip()}
-
-        return {"text": raw_text}
-
-    except Exception as e:
-        if os.path.exists(image_path):
-            os.remove(image_path)
-        raise Exception(f"AI Processing Error: {str(e)}")
 
 # --- ROUTES ---
 @app.route('/')
@@ -202,29 +153,44 @@ def enhance_image():
 
 @app.route('/api/ocr', methods=['POST'])
 def ocr_api():
-    file = request.files.get('image')
-    smart_format = request.form.get('smart_format') == 'true' 
-    
-    if not file: return jsonify({"error": "No image provided"}), 400
-    
-    filename = secure_filename(file.filename or "crop.png")
-    temp_path = os.path.join(TEMP_DIR, f"ocr_temp_{int(time.time())}_{filename}")
-    file.save(temp_path)
-    
-    task = async_ocr_task.apply_async(args=[temp_path, smart_format])
-    return jsonify({"task_id": task.id}), 202
+    try:
+        file = request.files.get('image')
+        smart_format = request.form.get('smart_format') == 'true'
 
-@app.route('/api/ocr/status/<task_id>', methods=['GET'])
-def ocr_status(task_id):
-    task = async_ocr_task.AsyncResult(task_id)
-    if task.state == 'PENDING':
-        return jsonify({"state": task.state, "status": "In Queue..."})
-    elif task.state == 'SUCCESS':
-        return jsonify({"state": task.state, "result": task.info})
-    elif task.state == 'FAILURE':
-        return jsonify({"state": task.state, "error": str(task.info)})
-    else:
-        return jsonify({"state": task.state, "status": "Processing..."})
+        if not file:
+            return jsonify({"state": "FAILURE", "error": "No image provided"}), 400
+
+        # Read image bytes
+        image_bytes = file.read()
+
+        # Use Gemini to extract text
+        prompt = "Extract all text from this image exactly, preserving formatting. Return plain text only, no extra commentary."
+        response = llm_model.generate_content(
+            prompt,
+            images=[{
+                'mimeType': 'image/png',  # Assume PNG, but Gemini handles various
+                'content': base64.b64encode(image_bytes).decode('utf-8')
+            }]
+        )
+
+        raw_text = (response.text or "").strip()
+
+        if not raw_text:
+            return jsonify({"state": "SUCCESS", "result": {"text": "No clear text or handwriting could be detected."}})
+
+        if smart_format:
+            format_prompt = f"Format this extracted text clearly and fix obvious typos. Return only text.\n\n{raw_text}"
+            formatted_response = llm_model.generate_content(format_prompt)
+            final_text = (formatted_response.text or "").strip()
+        else:
+            final_text = raw_text
+
+        return jsonify({"state": "SUCCESS", "result": {"text": final_text}})
+
+    except Exception as e:
+        return jsonify({"state": "FAILURE", "error": str(e)})
+
+
 
 @app.route('/api/pdf', methods=['POST'])
 def pdf_api():
