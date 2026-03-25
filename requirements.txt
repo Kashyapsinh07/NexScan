@@ -1,0 +1,14 @@
+Flask==3.0.0
+werkzeug==3.0.0
+opencv-python-headless
+numpy
+img2pdf
+pdf2docx
+easyocr
+celery
+redis
+google-generativeai
+PyMuPDF
+Pillow
+flask-cors
+gunicorn
