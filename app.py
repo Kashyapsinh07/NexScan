@@ -1,8 +1,7 @@
 from flask import Flask, render_template, request, send_file, jsonify
-import cv2, numpy as np, io, img2pdf, os, json, time, subprocess
+import cv2, numpy as np, io, img2pdf, os, json, time, subprocess, base64
 from PIL import Image
 from pdf2docx import Converter
-import easyocr
 from werkzeug.utils import secure_filename
 from celery import Celery
 import google.generativeai as genai
@@ -27,14 +26,11 @@ celery = Celery(app.name, broker=app.config['CELERY_BROKER_URL'])
 celery.conf.update(app.config)
 
 # --- AI INITIALIZATION ---
-print("🧠 Loading NexScan Deep Learning Handwriting Model (English + Hindi)...")
-ocr_model = easyocr.Reader(['en', 'hi'], gpu=False)
-
 print("✨ Connecting to Gemini Context Engine...")
-# IMPORTANT: Put your actual Gemini API Key here!
-genai.configure(api_key="AIzaSyAePClWhbzoT6LHK96S8sdqLYNRPTVGFeU")
+# IMPORTANT: Put your actual Gemini API Key in environment variable GEMINI_API_KEY.
+# On Render set this in Web Service Environment variables.
+genai.configure(api_key=os.environ.get('AIzaSyAePClWhbzoT6LHK96S8sdqLYNRPTVGFeU', ''))
 llm_model = genai.GenerativeModel('gemini-2.5-flash')
-
 print("✅ All Systems Ready!")
 
 # --- UTILITIES ---
@@ -52,39 +48,41 @@ def cleanup_temp_dir(max_age_seconds=3600):
 @celery.task(bind=True)
 def async_ocr_task(self, image_path, apply_ai_formatting=False):
     try:
-        # SPEED HACK: Smart Image Downscaling
-        img = cv2.imread(image_path)
-        h, w = img.shape[:2]
-        
-        # If the image is huge, shrink it to 1000px wide
-        if w > 1000:
-            ratio = 1000.0 / w
-            img = cv2.resize(img, (1000, int(h * ratio)))
-            
-        # 1. Raw Extraction (Pass the resized image directly to EasyOCR)
-        results = ocr_model.readtext(img, detail=0, paragraph=True)
-        raw_text = "\n\n".join(results)
-        
+        # 1. Read image bytes from temp file
+        with open(image_path, 'rb') as f:
+            image_bytes = f.read()
+
+        mime_type = 'image/png'
+        # if the image is not png, still pass as binary
+
+        # 2. Use Gemini to extract text from the image
+        # NOTE: adjust according to the google-generativeai SDK version if needed.
+        response = llm_model.generate_content(
+            "Extract all text from this image exactly, preserving formatting. Return plain text only, no extra commentary.",
+            images=[{
+                'mimeType': mime_type,
+                'content': base64.b64encode(image_bytes).decode('utf-8')
+            }]
+        )
+
+        raw_text = (response.text or "").strip()
+
         if os.path.exists(image_path):
             os.remove(image_path)
-            
-        if not raw_text.strip(): 
+
+        if not raw_text:
             return {"text": "No clear text or handwriting could be detected."}
-            
-        # 2. AI Context Formatting
+
         if apply_ai_formatting:
-            prompt = f"""
-            Format this raw OCR text beautifully. Fix obvious typos.
-            Return ONLY the formatted text.
-            RAW TEXT: {raw_text}
-            """
-            response = llm_model.generate_content(prompt)
-            return {"text": response.text}
-            
-        return {"text": raw_text.strip()}
-        
+            prompt = f"Format this extracted text clearly and fix obvious typos. Return only text.\n\n{raw_text}"
+            formatted = llm_model.generate_content(prompt)
+            return {"text": (formatted.text or "").strip()}
+
+        return {"text": raw_text}
+
     except Exception as e:
-        if os.path.exists(image_path): os.remove(image_path)
+        if os.path.exists(image_path):
+            os.remove(image_path)
         raise Exception(f"AI Processing Error: {str(e)}")
 
 # --- ROUTES ---
