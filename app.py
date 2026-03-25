@@ -21,7 +21,7 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 print("✨ Connecting to Gemini Context Engine...")
 # IMPORTANT: Put your actual Gemini API Key in environment variable GEMINI_API_KEY.
 # On Render set this in Web Service Environment variables.
-genai.configure(api_key=os.environ.get('GEMINI_API_KEY', ''))
+genai.configure(api_key=os.environ.get('AIzaSyAePClWhbzoT6LHK96S8sdqLYNRPTVGFeU', ''))
 llm_model = genai.GenerativeModel('gemini-2.5-flash')
 print("✅ All Systems Ready!")
 
