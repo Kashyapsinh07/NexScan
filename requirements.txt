@@ -1,6 +1,10 @@
-flask
+Flask
 flask-cors
 opencv-python-headless
+numpy
+img2pdf
+pdf2docx
+PyMuPDF
+Pillow
 google-generativeai
-pillow
 gunicorn
