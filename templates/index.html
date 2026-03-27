@@ -447,7 +447,6 @@
         .dash-card:hover .card-title { transition: all 0.5s ease-out; color: #ffffff; }
 
         /* --- TOOL INTERFACES --- */
-        /* NEW UI BACK BUTTON */
         .back-btn {
             background: none;
             border: none;
@@ -1186,28 +1185,22 @@
                 const fd = new FormData(); fd.append("image", blob, "crop.png");
                 fd.append("smart_format", document.getElementById('chk-smart-format').checked);
                 
-                const response = await fetch('/api/ocr', {method:'POST', body:fd});
-                const data = await response.json();
-                
-                const taskId = data.task_id;
-                const pollInterval = setInterval(async () => {
-                    const statusRes = await fetch(`/api/ocr/status/${taskId}`);
-                    const statusData = await statusRes.json();
+                try {
+                    const response = await fetch('/api/ocr', {method:'POST', body:fd});
+                    const data = await response.json();
                     
-                    if (statusData.state === 'SUCCESS') {
-                        clearInterval(pollInterval);
+                    if (data.state === 'SUCCESS') {
                         statOcr.style.display='none'; resOcr.style.display='block'; btnCopy.style.display='inline-flex';
-                        resOcr.value = statusData.result.text || "No text found.";
-                        document.getElementById('lbl-ocr').style.display='inline-flex';
-                    } else if (statusData.state === 'FAILURE') {
-                        clearInterval(pollInterval);
-                        statOcr.innerHTML = `<span style='color:red;'>Error: ${statusData.error}</span>`;
+                        resOcr.value = data.result.text || "No text found.";
                         document.getElementById('lbl-ocr').style.display='inline-flex';
                     } else {
-                        statOcr.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${statusData.status}`;
+                        statOcr.innerHTML = `<span style='color:red;'>Error: ${data.error}</span>`;
+                        document.getElementById('lbl-ocr').style.display='inline-flex';
                     }
-                }, 1500); 
-
+                } catch (err) {
+                    statOcr.innerHTML = `<span style='color:red;'>Error connecting to server.</span>`;
+                    document.getElementById('lbl-ocr').style.display='inline-flex';
+                }
             }, 'image/png');
         };
 

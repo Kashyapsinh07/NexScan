@@ -6,5 +6,6 @@ img2pdf
 pdf2docx
 PyMuPDF
 Pillow
-google-generativeai
+google-genai
 gunicorn
+python-dotenv

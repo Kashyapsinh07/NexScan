@@ -3,7 +3,12 @@ import cv2, numpy as np, io, img2pdf, os, json, time, subprocess, base64
 from PIL import Image
 from pdf2docx import Converter
 from werkzeug.utils import secure_filename
-import google.generativeai as genai
+from dotenv import load_dotenv
+from google import genai
+from google.genai import types
+
+# Load the environment variables from your .env file
+load_dotenv()
 
 try:
     import fitz  # PyMuPDF for PDF compression
@@ -19,11 +24,12 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 
 # --- AI INITIALIZATION ---
 print("✨ Connecting to Gemini Context Engine...")
-# IMPORTANT: Put your actual Gemini API Key in environment variable GEMINI_API_KEY.
-# On Render set this in Web Service Environment variables.
-genai.configure(api_key=os.environ.get('AIzaSyAePClWhbzoT6LHK96S8sdqLYNRPTVGFeU', ''))
-llm_model = genai.GenerativeModel('gemini-2.5-flash')
-print("✅ All Systems Ready!")
+try:
+    # The new Client automatically looks for the GEMINI_API_KEY environment variable!
+    gemini_client = genai.Client()
+    print("✅ All Systems Ready!")
+except Exception as e:
+    print(f"⚠️ WARNING: Failed to initialize Gemini Client. Check your .env file. Error: {e}")
 
 # --- UTILITIES ---
 def cleanup_temp_dir(max_age_seconds=3600):
@@ -57,7 +63,6 @@ def detect():
         document_contour = None
         
         # 1. THE MULTI-PASS SYSTEM
-        # We test 3 different vision filters. If a dark shadow ruins one, the next one will catch it.
         filters = [
             cv2.Canny(cv2.GaussianBlur(gray, (5, 5), 0), 75, 200),   # Pass 1: Standard Document
             cv2.Canny(cv2.GaussianBlur(gray, (7, 7), 0), 30, 100),   # Pass 2: High Sensitivity (for low contrast)
@@ -65,7 +70,6 @@ def detect():
         ]
         
         for edge_filter in filters:
-            # Thicken the lines slightly to close small gaps
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
             closed = cv2.morphologyEx(edge_filter, cv2.MORPH_CLOSE, kernel)
             
@@ -76,11 +80,9 @@ def detect():
                 peri = cv2.arcLength(c, True)
                 
                 # 2. THE EPSILON LOOP
-                # We test 3 levels of mathematical smoothing to force the shape into exactly 4 corners
                 for eps in [0.02, 0.04, 0.06]:
                     approx = cv2.approxPolyDP(c, eps * peri, True)
                     
-                    # Is it 4 points? Is it at least 15% of the image size?
                     if len(approx) == 4 and cv2.contourArea(approx) > (500 * (h/ratio) * 0.15):
                         document_contour = approx.reshape(-1, 2)
                         break # Found it!
@@ -163,14 +165,15 @@ def ocr_api():
         # Read image bytes
         image_bytes = file.read()
 
-        # Use Gemini to extract text
+        # Use the new Gemini Client to extract text
         prompt = "Extract all text from this image exactly, preserving formatting. Return plain text only, no extra commentary."
-        response = llm_model.generate_content(
-            prompt,
-            images=[{
-                'mimeType': 'image/png',  # Assume PNG, but Gemini handles various
-                'content': base64.b64encode(image_bytes).decode('utf-8')
-            }]
+        
+        response = gemini_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=[
+                types.Part.from_bytes(data=image_bytes, mime_type='image/png'),
+                prompt
+            ]
         )
 
         raw_text = (response.text or "").strip()
@@ -180,7 +183,10 @@ def ocr_api():
 
         if smart_format:
             format_prompt = f"Format this extracted text clearly and fix obvious typos. Return only text.\n\n{raw_text}"
-            formatted_response = llm_model.generate_content(format_prompt)
+            formatted_response = gemini_client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=format_prompt
+            )
             final_text = (formatted_response.text or "").strip()
         else:
             final_text = raw_text
@@ -189,8 +195,6 @@ def ocr_api():
 
     except Exception as e:
         return jsonify({"state": "FAILURE", "error": str(e)})
-
-
 
 @app.route('/api/pdf', methods=['POST'])
 def pdf_api():
